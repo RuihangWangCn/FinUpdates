@@ -208,6 +208,9 @@ const sourceLinks = {
   stooq: 'https://stooq.com/',
 }
 
+const staticHostingMessage =
+  'GitHub Pages 是静态演示版；实时行情、抓新闻和 DeepSeek 问答需要本地 Vite 服务。'
+
 const marketBreadths: MarketBreadth[] = [
   {
     market: 'A股',
@@ -497,6 +500,10 @@ function toneFromChange(value: number) {
 
 function buildBingSearchUrl(query: string) {
   return `https://cn.bing.com/search?q=${encodeURIComponent(query)}`
+}
+
+function isStaticDemoHost() {
+  return window.location.hostname.endsWith('github.io')
 }
 
 function buildNewsQuery(market: Market, sector: Sector) {
@@ -827,6 +834,11 @@ function App() {
       : marketSource.us?.proxies
 
   const refreshMarketSources = useCallback(async () => {
+    if (isStaticDemoHost()) {
+      setMarketSource({ status: 'idle', error: staticHostingMessage })
+      return
+    }
+
     setMarketSource((source) => ({ ...source, status: 'loading', error: undefined }))
     setMarketSource(await loadMarketSourceSnapshot())
   }, [])
@@ -839,6 +851,13 @@ function App() {
 
   useEffect(() => {
     let isMounted = true
+
+    if (isStaticDemoHost()) {
+      setMarketSource({ status: 'idle', error: staticHostingMessage })
+      return () => {
+        isMounted = false
+      }
+    }
 
     loadMarketSourceSnapshot().then((snapshot) => {
       if (isMounted) setMarketSource(snapshot)
@@ -866,6 +885,18 @@ function App() {
 
   async function crawlSectorNews() {
     const sector = selectedSector
+
+    if (isStaticDemoHost()) {
+      setCrawledNewsBySector((state) => ({
+        ...state,
+        [sector.id]: {
+          status: 'error',
+          items: state[sector.id]?.items ?? [],
+          error: staticHostingMessage,
+        },
+      }))
+      return
+    }
 
     setCrawledNewsBySector((state) => ({
       ...state,
@@ -947,6 +978,12 @@ function App() {
     const question = botQuestion.trim()
 
     if (!question || botStatus === 'loading') return
+
+    if (isStaticDemoHost()) {
+      setBotError(staticHostingMessage)
+      setBotStatus('error')
+      return
+    }
 
     const userMessage: BotMessage = {
       id: `user-${Date.now()}`,
