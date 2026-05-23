@@ -1,4 +1,4 @@
-import { type FormEvent, useMemo, useState } from 'react'
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Activity,
   ArrowDownRight,
@@ -9,8 +9,13 @@ import {
   DatabaseZap,
   ExternalLink,
   LineChart,
+  MessageCircle,
   Newspaper,
+  Plus,
+  Radio,
+  RefreshCw,
   Search,
+  Send,
   ShieldAlert,
   Sparkles,
 } from 'lucide-react'
@@ -63,6 +68,39 @@ type NewsItem = {
   sourceUrl: string
 }
 
+type CrawledNewsItem = Pick<
+  NewsItem,
+  'id' | 'title' | 'source' | 'publishedAt' | 'tag' | 'rawSummary' | 'sourceUrl'
+>
+
+type CrawledNewsResponse = {
+  source: string
+  query: string
+  fetchedAt: string
+  items: CrawledNewsItem[]
+}
+
+type CrawledNewsState = {
+  status: SourceStatus
+  source?: string
+  fetchedAt?: string
+  query?: string
+  items: NewsItem[]
+  error?: string
+}
+
+type BotMessage = {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+}
+
+type DeepSeekChatResponse = {
+  answer?: string
+  model?: string
+  error?: string
+}
+
 type Analysis = {
   sentiment: Sentiment
   impactScore: number
@@ -72,6 +110,102 @@ type Analysis = {
   summary: string
   reasoning: string
   riskNote: string
+}
+
+type SourceStatus = 'idle' | 'loading' | 'ready' | 'error'
+
+type LiveIndexQuote = {
+  symbol: string
+  name: string
+  price: number
+  change: number
+  changeAmount?: number
+}
+
+type LiveSectorQuote = {
+  symbol: string
+  name: string
+  price: number
+  change: number
+  advancers?: number
+  decliners?: number
+  marketValue?: number
+}
+
+type AShareSource = {
+  sourceName: string
+  sourceUrl: string
+  fetchedAt: string
+  advancers: number
+  decliners: number
+  unchanged: number
+  turnover: number
+  indices: LiveIndexQuote[]
+  sectors: LiveSectorQuote[]
+}
+
+type UsSource = {
+  sourceName: string
+  sourceUrl: string
+  fetchedAt: string
+  proxies: LiveSectorQuote[]
+}
+
+type MarketSourceSnapshot = {
+  status: SourceStatus
+  error?: string
+  aShare?: AShareSource
+  us?: UsSource
+}
+
+type EastmoneyQuote = {
+  f2?: number | string
+  f3?: number | string
+  f4?: number | string
+  f6?: number | string
+  f12?: string
+  f14?: string
+  f20?: number | string
+  f104?: number | string
+  f105?: number | string
+  f106?: number | string
+}
+
+type EastmoneyResponse = {
+  data?: {
+    diff?: EastmoneyQuote[]
+  }
+}
+
+type StooqQuote = {
+  symbol: string
+  date: string
+  time: string
+  open: number
+  close: number
+  volume: number
+}
+
+type StooqResponse = {
+  source: string
+  quotes: StooqQuote[]
+}
+
+type TencentIndexResponse = {
+  source: string
+  indices: Array<LiveIndexQuote & { turnover?: number }>
+}
+
+const eastmoneyIndexUrl =
+  '/api/a-share-indices'
+
+const eastmoneySectorUrl =
+  '/api/eastmoney?target=sectors'
+
+const sourceLinks = {
+  eastmoney: 'https://quote.eastmoney.com/center/gridlist.html#hs_a_board',
+  tencent: 'https://gu.qq.com/',
+  stooq: 'https://stooq.com/',
 }
 
 const marketBreadths: MarketBreadth[] = [
@@ -318,6 +452,39 @@ const relationshipLabels: Record<string, string> = {
   negative_news_confirmed_by_selloff: '利空被抛售确认',
 }
 
+const chinaTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: 'Asia/Shanghai',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false,
+})
+
+const shortTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: 'Asia/Shanghai',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false,
+})
+
+const newsTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: 'Asia/Shanghai',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+})
+
+function normalizeNumber(value: number | string | undefined) {
+  const parsed = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
 function formatChange(value: number) {
   return `${value > 0 ? '+' : ''}${value.toFixed(2)}%`
 }
@@ -330,6 +497,213 @@ function toneFromChange(value: number) {
 
 function buildBingSearchUrl(query: string) {
   return `https://cn.bing.com/search?q=${encodeURIComponent(query)}`
+}
+
+function buildNewsQuery(market: Market, sector: Sector) {
+  const leaderNames = sector.leaders
+    .slice(0, 2)
+    .map((leader) => leader.split(' ')[0])
+    .join(' ')
+
+  return market === 'A股'
+    ? `${sector.name} A股 ${leaderNames}`
+    : `${sector.name} stocks ${leaderNames}`
+}
+
+function formatChinaTime(date: Date) {
+  return chinaTimeFormatter.format(date).replace(/\//g, '-')
+}
+
+function formatShortChinaTime(value?: string) {
+  if (!value) return '尚未拉取'
+  return shortTimeFormatter.format(new Date(value))
+}
+
+function formatNewsTimestamp(value: string) {
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) return value
+
+  return newsTimeFormatter.format(date).replace(/\//g, '-')
+}
+
+function formatTurnover(value: number) {
+  if (value >= 1_000_000_000_000) {
+    return `${(value / 1_000_000_000_000).toFixed(2)} 万亿`
+  }
+
+  if (value >= 100_000_000) {
+    return `${(value / 100_000_000).toFixed(0)} 亿`
+  }
+
+  return value.toLocaleString('zh-CN')
+}
+
+function formatVolume(value?: number) {
+  if (!value) return '成交量 --'
+
+  if (value >= 100_000_000) {
+    return `成交量 ${(value / 100_000_000).toFixed(2)} 亿`
+  }
+
+  if (value >= 10_000) {
+    return `成交量 ${(value / 10_000).toFixed(0)} 万`
+  }
+
+  return `成交量 ${value.toLocaleString('zh-CN')}`
+}
+
+async function fetchJson<T>(url: string): Promise<T> {
+  const response = await fetch(url, { cache: 'no-store' })
+
+  if (!response.ok) {
+    throw new Error(`行情源返回 ${response.status}`)
+  }
+
+  return response.json() as Promise<T>
+}
+
+async function fetchCrawledNews(market: Market, sector: Sector): Promise<CrawledNewsResponse> {
+  const query = buildNewsQuery(market, sector)
+
+  return fetchJson<CrawledNewsResponse>(
+    `/api/news?market=${encodeURIComponent(market)}&q=${encodeURIComponent(query)}`,
+  )
+}
+
+async function askDeepSeekBot({
+  question,
+  market,
+  sector,
+  breadth,
+  news,
+}: {
+  question: string
+  market: Market
+  sector: Sector
+  breadth: MarketBreadth
+  news: NewsItem[]
+}): Promise<DeepSeekChatResponse> {
+  const response = await fetch('/api/deepseek-chat', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      question,
+      market,
+      sector: sector.name,
+      marketContext: `${breadth.market}：上涨 ${breadth.advancers} 家，下跌 ${breadth.decliners} 家，成交额 ${breadth.turnover}；${sector.name} 涨跌幅 ${formatChange(
+        sector.change,
+      )}，热度 ${sector.hotScore}，上涨比例 ${sector.advancers}/${sector.totalStocks}`,
+      news: news.slice(0, 10).map((item) => ({
+        title: item.title,
+        source: item.source,
+        publishedAt: item.publishedAt,
+        rawSummary: item.rawSummary,
+        sourceUrl: item.sourceUrl,
+      })),
+    }),
+  })
+
+  const data = (await response.json()) as DeepSeekChatResponse
+
+  if (!response.ok) {
+    throw new Error(data.error ?? 'DeepSeek API 调用失败')
+  }
+
+  return data
+}
+
+async function fetchAShareSource(): Promise<AShareSource> {
+  const indexData = await fetchJson<TencentIndexResponse>(eastmoneyIndexUrl)
+  const sectorData = await fetchJson<EastmoneyResponse>(eastmoneySectorUrl).catch(() => undefined)
+  const indices = indexData.indices
+  const turnover = indices.reduce((total, quote) => total + (quote.turnover ?? 0), 0)
+
+  const sectors = sectorData?.data?.diff?.length
+    ? sectorData.data.diff.map((quote) => ({
+        symbol: quote.f12 ?? '',
+        name: quote.f14 ?? '未知行业',
+        price: normalizeNumber(quote.f2),
+        change: normalizeNumber(quote.f3),
+        advancers: normalizeNumber(quote.f104),
+        decliners: normalizeNumber(quote.f105),
+        marketValue: normalizeNumber(quote.f20),
+      }))
+    : indices.map((index) => ({
+        symbol: index.symbol,
+        name: index.name,
+        price: index.price,
+        change: index.change,
+      }))
+
+  if (!indices.length) {
+    throw new Error('腾讯证券没有返回可用指数行情')
+  }
+
+  return {
+    sourceName: sectorData?.data?.diff?.length ? '腾讯证券 + 东方财富' : indexData.source,
+    sourceUrl: sectorData?.data?.diff?.length ? sourceLinks.eastmoney : sourceLinks.tencent,
+    fetchedAt: new Date().toISOString(),
+    advancers: 0,
+    decliners: 0,
+    unchanged: 0,
+    turnover,
+    indices,
+    sectors,
+  }
+}
+
+async function fetchUsSource(): Promise<UsSource> {
+  const data = await fetchJson<StooqResponse>(
+    '/api/stooq-quotes?symbols=spy.us,qqq.us,dia.us,iwm.us',
+  )
+
+  const proxyNames: Record<string, string> = {
+    'SPY.US': 'S&P 500 ETF',
+    'QQQ.US': 'Nasdaq 100 ETF',
+    'DIA.US': 'Dow ETF',
+    'IWM.US': 'Russell 2000 ETF',
+  }
+
+  return {
+    sourceName: data.source,
+    sourceUrl: sourceLinks.stooq,
+    fetchedAt: new Date().toISOString(),
+    proxies: data.quotes.map((quote) => ({
+      symbol: quote.symbol,
+      name: proxyNames[quote.symbol] ?? quote.symbol,
+      price: quote.close,
+      change: quote.open ? ((quote.close - quote.open) / quote.open) * 100 : 0,
+      marketValue: quote.volume,
+    })),
+  }
+}
+
+async function loadMarketSourceSnapshot(): Promise<MarketSourceSnapshot> {
+  const results = await Promise.allSettled([fetchAShareSource(), fetchUsSource()])
+  const [aShareResult, usResult] = results
+  const nextSnapshot: MarketSourceSnapshot = {
+    status: results.some((result) => result.status === 'fulfilled') ? 'ready' : 'error',
+  }
+
+  if (aShareResult.status === 'fulfilled') {
+    nextSnapshot.aShare = aShareResult.value
+  }
+
+  if (usResult.status === 'fulfilled') {
+    nextSnapshot.us = usResult.value
+  }
+
+  if (results.some((result) => result.status === 'rejected')) {
+    nextSnapshot.error = results
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map((result) => (result.reason instanceof Error ? result.reason.message : '行情源失败'))
+      .join('；')
+  }
+
+  return nextSnapshot
 }
 
 function buildAnalysis(news: NewsItem, sector: Sector, breadth: MarketBreadth): Analysis {
@@ -380,36 +754,233 @@ function App() {
   const [analysisCache, setAnalysisCache] = useState<Record<string, Analysis>>({})
   const [loadingId, setLoadingId] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
+  const [currentTime, setCurrentTime] = useState(() => new Date())
+  const [marketSource, setMarketSource] = useState<MarketSourceSnapshot>({
+    status: 'idle',
+  })
+  const [crawledNewsBySector, setCrawledNewsBySector] = useState<
+    Record<string, CrawledNewsState>
+  >({})
+  const [customSectors, setCustomSectors] = useState<Sector[]>([])
+  const [customSectorName, setCustomSectorName] = useState('')
+  const [botQuestion, setBotQuestion] = useState('')
+  const [botMessages, setBotMessages] = useState<BotMessage[]>([])
+  const [botStatus, setBotStatus] = useState<SourceStatus>('idle')
+  const [botError, setBotError] = useState<string | undefined>()
 
   const breadth = marketBreadths.find((item) => item.market === activeMarket)!
+  const displayBreadth = useMemo<MarketBreadth>(() => {
+    if (activeMarket !== 'A股' || !marketSource.aShare) return breadth
+
+    return {
+      ...breadth,
+      updateTime: `${marketSource.aShare.sourceName} ${formatShortChinaTime(
+        marketSource.aShare.fetchedAt,
+      )}`,
+      advancers: marketSource.aShare.advancers || breadth.advancers,
+      decliners: marketSource.aShare.decliners || breadth.decliners,
+      unchanged: marketSource.aShare.unchanged || breadth.unchanged,
+      turnover: marketSource.aShare.turnover ? formatTurnover(marketSource.aShare.turnover) : breadth.turnover,
+      indices: marketSource.aShare.indices.map((index) => ({
+        name: index.name,
+        change: index.change,
+      })),
+      extra: [
+        {
+          label: '行情源',
+          value: marketSource.aShare.sourceName,
+          tone: 'flat',
+        },
+        {
+          label: '拉取时间',
+          value: formatShortChinaTime(marketSource.aShare.fetchedAt),
+          tone: 'flat',
+        },
+      ],
+    }
+  }, [activeMarket, breadth, marketSource.aShare])
+  const sectorUniverse = useMemo(() => [...sectors, ...customSectors], [customSectors])
   const visibleSectors = useMemo(
     () =>
-      sectors
+      sectorUniverse
         .filter((sector) => sector.market === activeMarket)
         .sort((a, b) => b.hotScore - a.hotScore),
-    [activeMarket],
+    [activeMarket, sectorUniverse],
   )
   const selectedSector =
     visibleSectors.find((sector) => sector.id === selectedSectorId) ?? visibleSectors[0]
-  const visibleNews = newsItems.filter(
+  const staticNews = newsItems.filter(
     (news) => news.market === activeMarket && news.sectorId === selectedSector.id,
   )
+  const crawledNewsState = crawledNewsBySector[selectedSector.id]
+  const visibleNews = crawledNewsState?.items.length
+    ? [...crawledNewsState.items, ...staticNews]
+    : staticNews
   const selectedNews =
     visibleNews.find((news) => news.id === selectedNewsId) ?? visibleNews[0]
   const selectedAnalysis = selectedNews ? analysisCache[selectedNews.id] : undefined
+  const activeSource =
+    activeMarket === 'A股' ? marketSource.aShare : marketSource.us
+  const sourceItems =
+    activeMarket === 'A股'
+      ? marketSource.aShare?.sectors
+      : marketSource.us?.proxies
+
+  const refreshMarketSources = useCallback(async () => {
+    setMarketSource((source) => ({ ...source, status: 'loading', error: undefined }))
+    setMarketSource(await loadMarketSourceSnapshot())
+  }, [])
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => setCurrentTime(new Date()), 1000)
+
+    return () => window.clearInterval(intervalId)
+  }, [])
+
+  useEffect(() => {
+    let isMounted = true
+
+    loadMarketSourceSnapshot().then((snapshot) => {
+      if (isMounted) setMarketSource(snapshot)
+    })
+
+    return () => {
+      isMounted = false
+    }
+  }, [])
 
   function switchMarket(market: Market) {
-    const firstSector = sectors.find((sector) => sector.market === market)!
+    const firstSector = sectorUniverse.find((sector) => sector.market === market)!
     const firstNews = newsItems.find((news) => news.sectorId === firstSector.id)!
     setActiveMarket(market)
     setSelectedSectorId(firstSector.id)
-    setSelectedNewsId(firstNews.id)
+    if (firstNews) setSelectedNewsId(firstNews.id)
   }
 
   function selectSector(sector: Sector) {
-    const firstNews = newsItems.find((news) => news.sectorId === sector.id)
+    const firstNews =
+      crawledNewsBySector[sector.id]?.items[0] ?? newsItems.find((news) => news.sectorId === sector.id)
     setSelectedSectorId(sector.id)
     if (firstNews) setSelectedNewsId(firstNews.id)
+  }
+
+  async function crawlSectorNews() {
+    const sector = selectedSector
+
+    setCrawledNewsBySector((state) => ({
+      ...state,
+      [sector.id]: {
+        ...state[sector.id],
+        status: 'loading',
+        items: state[sector.id]?.items ?? [],
+        error: undefined,
+      },
+    }))
+
+    try {
+      const response = await fetchCrawledNews(activeMarket, sector)
+      const crawledItems = response.items.map((item) => ({
+        ...item,
+        market: activeMarket,
+        sectorId: sector.id,
+        sectorName: sector.name,
+        publishedAt: formatNewsTimestamp(item.publishedAt),
+        relatedTickers: sector.leaders.slice(0, 2).map((leader) => leader.split(' ')[0]),
+      }))
+
+      setCrawledNewsBySector((state) => ({
+        ...state,
+        [sector.id]: {
+          status: 'ready',
+          source: response.source,
+          fetchedAt: response.fetchedAt,
+          query: response.query,
+          items: crawledItems,
+        },
+      }))
+
+      if (crawledItems[0]) {
+        setSelectedNewsId(crawledItems[0].id)
+      }
+    } catch (error) {
+      setCrawledNewsBySector((state) => ({
+        ...state,
+        [sector.id]: {
+          ...state[sector.id],
+          status: 'error',
+          items: state[sector.id]?.items ?? [],
+          error: error instanceof Error ? error.message : '新闻抓取失败',
+        },
+      }))
+    }
+  }
+
+  function submitCustomSector(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const name = customSectorName.trim()
+
+    if (!name) return
+
+    const customSector: Sector = {
+      id: `custom-${activeMarket}-${Date.now()}`,
+      market: activeMarket,
+      name,
+      change: 0,
+      turnoverRank: 0,
+      hotScore: 50,
+      advancers: 0,
+      totalStocks: 0,
+      leaders: [],
+      laggards: [],
+      newsCount: 0,
+      aiRead: '自选板块，先抓取新闻，再让 DeepSeek 按需回答问题。',
+    }
+
+    setCustomSectors((items) => [customSector, ...items])
+    setSelectedSectorId(customSector.id)
+    setSelectedNewsId('')
+    setCustomSectorName('')
+  }
+
+  async function submitBotQuestion(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const question = botQuestion.trim()
+
+    if (!question || botStatus === 'loading') return
+
+    const userMessage: BotMessage = {
+      id: `user-${Date.now()}`,
+      role: 'user',
+      content: question,
+    }
+
+    setBotMessages((messages) => [...messages, userMessage])
+    setBotQuestion('')
+    setBotStatus('loading')
+    setBotError(undefined)
+
+    try {
+      const response = await askDeepSeekBot({
+        question,
+        market: activeMarket,
+        sector: selectedSector,
+        breadth: displayBreadth,
+        news: visibleNews,
+      })
+
+      setBotMessages((messages) => [
+        ...messages,
+        {
+          id: `assistant-${Date.now()}`,
+          role: 'assistant',
+          content: response.answer || 'DeepSeek 没有返回内容。',
+        },
+      ])
+      setBotStatus('ready')
+    } catch (error) {
+      setBotError(error instanceof Error ? error.message : 'DeepSeek 问答失败')
+      setBotStatus('error')
+    }
   }
 
   function analyzeNews() {
@@ -419,7 +990,7 @@ function App() {
     window.setTimeout(() => {
       setAnalysisCache((cache) => ({
         ...cache,
-        [selectedNews.id]: buildAnalysis(selectedNews, selectedSector, breadth),
+        [selectedNews.id]: buildAnalysis(selectedNews, selectedSector, displayBreadth),
       }))
       setLoadingId(null)
     }, 760)
@@ -442,6 +1013,10 @@ function App() {
         <div>
           <p className="eyebrow">FinUpdates MVP</p>
           <h1>市场宽度 + 热门板块 + AI 消息归因</h1>
+          <p className="current-time">
+            <Clock3 size={14} />
+            当前北京时间 {formatChinaTime(currentTime)}
+          </p>
         </div>
         <div className="topbar-actions">
           <form className="search-form" onSubmit={submitSearch}>
@@ -474,22 +1049,22 @@ function App() {
         <article className="market-card breadth-card">
           <div className="section-title">
             <Activity size={18} />
-            <span>{breadth.market} 市场宽度</span>
+            <span>{displayBreadth.market} 市场宽度</span>
           </div>
           <div className="breadth-number-row">
-            <Metric label="上涨家数" value={breadth.advancers.toLocaleString()} tone="up" />
-            <Metric label="下跌家数" value={breadth.decliners.toLocaleString()} tone="down" />
-            <Metric label="平盘" value={breadth.unchanged.toLocaleString()} tone="flat" />
+            <Metric label="上涨家数" value={displayBreadth.advancers.toLocaleString()} tone="up" />
+            <Metric label="下跌家数" value={displayBreadth.decliners.toLocaleString()} tone="down" />
+            <Metric label="平盘" value={displayBreadth.unchanged.toLocaleString()} tone="flat" />
           </div>
           <div className="micro-grid">
-            {breadth.limitUp !== undefined && (
+            {displayBreadth.limitUp !== undefined && (
               <>
-                <Metric label="涨停" value={breadth.limitUp.toString()} tone="up" compact />
-                <Metric label="跌停" value={breadth.limitDown!.toString()} tone="down" compact />
+                <Metric label="涨停" value={displayBreadth.limitUp.toString()} tone="up" compact />
+                <Metric label="跌停" value={displayBreadth.limitDown!.toString()} tone="down" compact />
               </>
             )}
-            <Metric label="成交额" value={breadth.turnover} tone="flat" compact />
-            {breadth.extra.map((item) => (
+            <Metric label="成交额" value={displayBreadth.turnover} tone="flat" compact />
+            {displayBreadth.extra.map((item) => (
               <Metric
                 key={item.label}
                 label={item.label}
@@ -501,7 +1076,7 @@ function App() {
           </div>
           <p className="timestamp">
             <Clock3 size={14} />
-            {breadth.tradeDate} · {breadth.updateTime}
+            {displayBreadth.tradeDate} · {displayBreadth.updateTime}
           </p>
         </article>
 
@@ -511,7 +1086,7 @@ function App() {
             <span>主要指数</span>
           </div>
           <div className="index-list">
-            {breadth.indices.map((index) => (
+            {displayBreadth.indices.map((index) => (
               <div key={index.name} className="index-row">
                 <span>{index.name}</span>
                 <strong className={toneFromChange(index.change)}>
@@ -525,17 +1100,69 @@ function App() {
         <article className="market-card thesis-card">
           <div className="section-title">
             <Brain size={18} />
-            <span>产品差异化</span>
+            <span>朋友群简报模式</span>
           </div>
           <p>
-            不只看新闻标题。AI 分析会同时读取当天指数、上涨下跌家数、板块涨跌、
-            成交热度和相关个股表现，判断消息是否真的被市场验证。
+            先给朋友看市场强弱和主线，再按需要点开某条消息做解释。
+            AI 只在明确点击后运行，不会自动消耗 API。
           </p>
           <div className="status-strip">
             <DatabaseZap size={16} />
-            <span>先打开信息源，再按需调用 DeepSeek，结果缓存复用</span>
+            <span>行情自动刷新；DeepSeek 必须手动触发，结果缓存复用</span>
           </div>
         </article>
+      </section>
+
+      <section className="source-strip" aria-label="行情信源">
+        <div className="source-strip-main">
+          <div className="section-title">
+            <Radio size={18} />
+            <span>行情信源</span>
+          </div>
+          <p>
+            {activeSource
+              ? `${activeSource.sourceName} · 拉取 ${formatShortChinaTime(activeSource.fetchedAt)}`
+              : marketSource.status === 'loading'
+                ? '正在拉取行情源'
+                : '等待行情源'}
+            {marketSource.error ? ` · ${marketSource.error}` : ''}
+          </p>
+        </div>
+        <div className="source-list">
+          {sourceItems?.slice(0, 4).map((item) => (
+            <a
+              key={item.symbol}
+              className="source-chip"
+              href={activeSource?.sourceUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <span>{item.name}</span>
+              <strong className={toneFromChange(item.change)}>{formatChange(item.change)}</strong>
+              <small>
+                {activeMarket === 'A股'
+                  ? item.advancers !== undefined
+                    ? `${item.advancers} 涨 / ${item.decliners ?? 0} 跌`
+                    : `点位 ${item.price.toLocaleString('zh-CN')}`
+                  : formatVolume(item.marketValue)}
+              </small>
+            </a>
+          ))}
+          {!sourceItems?.length && (
+            <span className="source-placeholder">
+              {marketSource.status === 'error' ? '行情源暂不可用' : '行情源加载中'}
+            </span>
+          )}
+        </div>
+        <button
+          type="button"
+          className="source-refresh"
+          onClick={refreshMarketSources}
+          disabled={marketSource.status === 'loading'}
+        >
+          <RefreshCw size={15} />
+          刷新行情
+        </button>
       </section>
 
       <section className="workspace">
@@ -570,6 +1197,20 @@ function App() {
               </button>
             ))}
           </div>
+          <form className="custom-sector-form" onSubmit={submitCustomSector}>
+            <label htmlFor="custom-sector">添加自选板块</label>
+            <div>
+              <input
+                id="custom-sector"
+                value={customSectorName}
+                onChange={(event) => setCustomSectorName(event.target.value)}
+                placeholder={activeMarket === 'A股' ? '例如：机器人 / 算力' : '例如：AI agents'}
+              />
+              <button type="submit" aria-label="添加自选板块">
+                <Plus size={15} />
+              </button>
+            </div>
+          </form>
         </aside>
 
         <section className="sector-detail">
@@ -589,20 +1230,63 @@ function App() {
           </div>
 
           <div className="sector-stats">
-            <Metric label="成交额排名" value={`#${selectedSector.turnoverRank}`} tone="flat" compact />
-            <Metric label="上涨比例" value={`${selectedSector.advancers}/${selectedSector.totalStocks}`} tone="up" compact />
-            <Metric label="领涨" value={selectedSector.leaders.join(' / ')} tone="up" compact />
-            <Metric label="领跌" value={selectedSector.laggards.join(' / ')} tone="down" compact />
+            <Metric
+              label="成交额排名"
+              value={selectedSector.turnoverRank ? `#${selectedSector.turnoverRank}` : '待验证'}
+              tone="flat"
+              compact
+            />
+            <Metric
+              label="上涨比例"
+              value={
+                selectedSector.totalStocks
+                  ? `${selectedSector.advancers}/${selectedSector.totalStocks}`
+                  : '待验证'
+              }
+              tone="up"
+              compact
+            />
+            <Metric
+              label="领涨"
+              value={selectedSector.leaders.length ? selectedSector.leaders.join(' / ') : '待抓取'}
+              tone="up"
+              compact
+            />
+            <Metric
+              label="领跌"
+              value={selectedSector.laggards.length ? selectedSector.laggards.join(' / ') : '待抓取'}
+              tone="down"
+              compact
+            />
           </div>
 
           <div className="news-analysis-grid">
             <div className="news-list-card">
               <div className="panel-header">
-                <div className="section-title">
-                  <Newspaper size={18} />
-                  <span>板块消息</span>
+                <div>
+                  <div className="section-title">
+                    <Newspaper size={18} />
+                    <span>板块消息</span>
+                  </div>
+                  <p className="crawler-status">
+                    {crawledNewsState?.status === 'ready'
+                      ? `${crawledNewsState.source} · ${formatShortChinaTime(
+                          crawledNewsState.fetchedAt,
+                        )} · ${crawledNewsState.query}`
+                      : crawledNewsState?.status === 'error'
+                        ? crawledNewsState.error
+                        : '默认样例新闻，可手动抓取最新相关新闻'}
+                  </p>
                 </div>
-                <span className="muted">点击标题打开信息源</span>
+                <button
+                  type="button"
+                  className="crawler-action"
+                  onClick={crawlSectorNews}
+                  disabled={crawledNewsState?.status === 'loading'}
+                >
+                  <RefreshCw size={14} />
+                  {crawledNewsState?.status === 'loading' ? '抓取中' : '抓取新闻'}
+                </button>
               </div>
               {visibleNews.map((news) => (
                 <a
@@ -658,10 +1342,10 @@ function App() {
                   {!selectedAnalysis && (
                     <div className="empty-analysis">
                       <Sparkles size={24} />
-                      <strong>这条消息还没有做行情上下文分析</strong>
+                      <strong>这条消息还没有手动做 AI 分析</strong>
                       <p>
-                        点击后模拟调用 DeepSeek：输入新闻、市场宽度、指数、板块涨跌、
-                        领涨领跌股，再判断它是否被市场验证。
+                        为了控制 API 成本，系统不会自动调用 DeepSeek。只有点击后，
+                        才会把新闻、市场宽度、指数、板块涨跌和相关个股交给 AI 判断。
                       </p>
                       <button
                         type="button"
@@ -669,7 +1353,7 @@ function App() {
                         onClick={analyzeNews}
                         disabled={loadingId === selectedNews.id}
                       >
-                        {loadingId === selectedNews.id ? '分析中...' : '用 DeepSeek 分析'}
+                        {loadingId === selectedNews.id ? '分析中...' : '手动调用 DeepSeek 分析'}
                       </button>
                     </div>
                   )}
@@ -715,6 +1399,51 @@ function App() {
                   )}
                 </>
               )}
+              {!selectedNews && (
+                <div className="empty-analysis">
+                  <Newspaper size={24} />
+                  <strong>这个板块还没有新闻</strong>
+                  <p>先点左侧板块消息里的“抓取新闻”，再向 DeepSeek 提问。</p>
+                </div>
+              )}
+              <div className="bot-panel">
+                <div className="bot-head">
+                  <div className="section-title">
+                    <MessageCircle size={18} />
+                    <span>DeepSeek 新闻问答</span>
+                  </div>
+                  <span className="muted">仅提交问题时调用 API</span>
+                </div>
+                <div className="bot-messages" aria-live="polite">
+                  {botMessages.length === 0 && (
+                    <p className="bot-empty">
+                      会读取当前板块最多 10 条新闻和行情上下文。不会因为抓新闻、切板块或打开页面自动调用。
+                    </p>
+                  )}
+                  {botMessages.map((message) => (
+                    <div key={message.id} className={`bot-message ${message.role}`}>
+                      {message.content}
+                    </div>
+                  ))}
+                  {botError && <div className="bot-error">{botError}</div>}
+                </div>
+                <form className="bot-form" onSubmit={submitBotQuestion}>
+                  <textarea
+                    value={botQuestion}
+                    onChange={(event) => setBotQuestion(event.target.value)}
+                    placeholder="问这个板块的新闻，比如：这些新闻说明资金在买什么？有哪些反证？"
+                    aria-label="向 DeepSeek 提问"
+                    rows={3}
+                  />
+                  <button
+                    type="submit"
+                    disabled={botStatus === 'loading' || !botQuestion.trim()}
+                  >
+                    <Send size={15} />
+                    {botStatus === 'loading' ? '提问中' : '提问'}
+                  </button>
+                </form>
+              </div>
             </article>
           </div>
         </section>
