@@ -1,15 +1,16 @@
-import { useMemo, useState } from 'react'
+import { type FormEvent, useMemo, useState } from 'react'
 import {
   Activity,
   ArrowDownRight,
   ArrowUpRight,
   BarChart3,
   Brain,
-  ChevronRight,
   Clock3,
   DatabaseZap,
+  ExternalLink,
   LineChart,
   Newspaper,
+  Search,
   ShieldAlert,
   Sparkles,
 } from 'lucide-react'
@@ -59,6 +60,7 @@ type NewsItem = {
   tag: string
   relatedTickers: string[]
   rawSummary: string
+  sourceUrl: string
 }
 
 type Analysis = {
@@ -215,6 +217,8 @@ const newsItems: NewsItem[] = [
     relatedTickers: ['新易盛', '中际旭创', '天孚通信'],
     rawSummary:
       '多家产业链公司反馈海外 AI 集群建设节奏加快，800G 光模块需求延续高景气。',
+    sourceUrl:
+      'https://cn.bing.com/search?q=%E6%B5%B7%E5%A4%96%E4%BA%91%E5%8E%82%E5%95%86%E4%B8%8A%E8%B0%83%E5%85%89%E6%A8%A1%E5%9D%97%E9%87%87%E8%B4%AD%E9%A2%84%E6%9C%9F%20800G',
   },
   {
     id: 'n2',
@@ -228,6 +232,8 @@ const newsItems: NewsItem[] = [
     relatedTickers: ['宁德时代', '亿纬锂能', '天赐材料'],
     rawSummary:
       '补贴政策稳定终端需求预期，但中游材料价格仍承压，市场担心库存周期未结束。',
+    sourceUrl:
+      'https://cn.bing.com/search?q=%E6%96%B0%E8%83%BD%E6%BA%90%E8%BD%A6%E8%A1%A5%E8%B4%B4%E7%BB%86%E5%88%99%20%E9%94%82%E7%94%B5%E6%9D%90%E6%96%99%E6%8A%A5%E4%BB%B7',
   },
   {
     id: 'n3',
@@ -241,6 +247,8 @@ const newsItems: NewsItem[] = [
     relatedTickers: ['中兴通讯', '烽火通信', '信维通信'],
     rawSummary:
       '三大运营商披露 5G-A 网络升级采购计划，涉及基站设备、射频器件和传输网络。',
+    sourceUrl:
+      'https://cn.bing.com/search?q=%E8%BF%90%E8%90%A5%E5%95%86%205G-A%20%E8%AE%BE%E5%A4%87%E9%9B%86%E9%87%87%20%E9%80%9A%E4%BF%A1%E8%AE%BE%E5%A4%87%E5%95%86',
   },
   {
     id: 'n4',
@@ -254,6 +262,8 @@ const newsItems: NewsItem[] = [
     relatedTickers: ['NVDA', 'AVGO', 'SMCI'],
     rawSummary:
       '管理层称 GPU 集群和高速网络需求高于年初预期，全年 AI capex 仍有上修空间。',
+    sourceUrl:
+      'https://cn.bing.com/search?q=cloud%20provider%20raises%20AI%20capital%20expenditure%20guidance%20NVDA%20AVGO',
   },
   {
     id: 'n5',
@@ -267,6 +277,8 @@ const newsItems: NewsItem[] = [
     relatedTickers: ['REGN', 'MRNA', 'BNTX'],
     rawSummary:
       '单家公司临床结果正面，但生物科技板块受融资环境与风险偏好压制。',
+    sourceUrl:
+      'https://cn.bing.com/search?q=biotech%20clinical%20data%20XBI%20weakness%20REGN%20MRNA',
   },
   {
     id: 'n6',
@@ -280,6 +292,8 @@ const newsItems: NewsItem[] = [
     relatedTickers: ['MU', 'AMAT', 'LRCX'],
     rawSummary:
       'DRAM 和 NAND 报价保持强势，部分晶圆厂释放设备扩产询价信号。',
+    sourceUrl:
+      'https://cn.bing.com/search?q=memory%20prices%20equipment%20orders%20MU%20AMAT%20LRCX',
   },
 ]
 
@@ -312,6 +326,10 @@ function toneFromChange(value: number) {
   if (value > 0) return 'up'
   if (value < 0) return 'down'
   return 'flat'
+}
+
+function buildBingSearchUrl(query: string) {
+  return `https://cn.bing.com/search?q=${encodeURIComponent(query)}`
 }
 
 function buildAnalysis(news: NewsItem, sector: Sector, breadth: MarketBreadth): Analysis {
@@ -361,6 +379,7 @@ function App() {
   const [selectedNewsId, setSelectedNewsId] = useState('n1')
   const [analysisCache, setAnalysisCache] = useState<Record<string, Analysis>>({})
   const [loadingId, setLoadingId] = useState<string | null>(null)
+  const [searchQuery, setSearchQuery] = useState('')
 
   const breadth = marketBreadths.find((item) => item.market === activeMarket)!
   const visibleSectors = useMemo(
@@ -406,6 +425,17 @@ function App() {
     }, 760)
   }
 
+  function searchBing(query: string) {
+    const trimmedQuery = query.trim()
+    if (!trimmedQuery) return
+    window.open(buildBingSearchUrl(trimmedQuery), '_blank', 'noopener,noreferrer')
+  }
+
+  function submitSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    searchBing(searchQuery)
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -413,17 +443,30 @@ function App() {
           <p className="eyebrow">FinUpdates MVP</p>
           <h1>市场宽度 + 热门板块 + AI 消息归因</h1>
         </div>
-        <div className="market-switch" aria-label="市场切换">
-          {(['A股', '美股'] as Market[]).map((market) => (
-            <button
-              key={market}
-              type="button"
-              className={activeMarket === market ? 'active' : ''}
-              onClick={() => switchMarket(market)}
-            >
-              {market}
-            </button>
-          ))}
+        <div className="topbar-actions">
+          <form className="search-form" onSubmit={submitSearch}>
+            <Search size={17} />
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="用 Bing 搜索相关新闻"
+              aria-label="用 Bing 搜索相关新闻"
+            />
+            <button type="submit">搜索</button>
+          </form>
+          <div className="market-switch" aria-label="市场切换">
+            {(['A股', '美股'] as Market[]).map((market) => (
+              <button
+                key={market}
+                type="button"
+                className={activeMarket === market ? 'active' : ''}
+                onClick={() => switchMarket(market)}
+              >
+                {market}
+              </button>
+            ))}
+          </div>
         </div>
       </header>
 
@@ -490,7 +533,7 @@ function App() {
           </p>
           <div className="status-strip">
             <DatabaseZap size={16} />
-            <span>点击新闻后按需调用 DeepSeek，结果缓存复用</span>
+            <span>先打开信息源，再按需调用 DeepSeek，结果缓存复用</span>
           </div>
         </article>
       </section>
@@ -559,13 +602,15 @@ function App() {
                   <Newspaper size={18} />
                   <span>板块消息</span>
                 </div>
-                <span className="muted">点击后再分析</span>
+                <span className="muted">点击标题打开信息源</span>
               </div>
               {visibleNews.map((news) => (
-                <button
+                <a
                   key={news.id}
-                  type="button"
                   className={`news-row ${selectedNews?.id === news.id ? 'selected' : ''}`}
+                  href={news.sourceUrl}
+                  target="_blank"
+                  rel="noreferrer"
                   onClick={() => setSelectedNewsId(news.id)}
                 >
                   <span className="tag">{news.tag}</span>
@@ -574,8 +619,8 @@ function App() {
                     {news.source} · {news.publishedAt}
                     {analysisCache[news.id] ? ' · 已分析' : ''}
                   </span>
-                  <ChevronRight size={16} />
-                </button>
+                  <ExternalLink size={16} />
+                </a>
               ))}
             </div>
 
@@ -590,6 +635,23 @@ function App() {
                       {selectedNews.relatedTickers.map((ticker) => (
                         <span key={ticker}>{ticker}</span>
                       ))}
+                    </div>
+                    <div className="source-actions">
+                      <a href={selectedNews.sourceUrl} target="_blank" rel="noreferrer">
+                        <ExternalLink size={15} />
+                        打开信息源
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          searchBing(
+                            `${selectedNews.sectorName} ${selectedNews.title} ${selectedNews.relatedTickers.join(' ')}`,
+                          )
+                        }
+                      >
+                        <Search size={15} />
+                        搜索相关新闻
+                      </button>
                     </div>
                   </div>
 

@@ -8,6 +8,7 @@ The prototype focuses on:
 - Hot sector ranking: sector change, heat score, advancer ratio, leading stocks, lagging stocks, and related news.
 - On-demand AI analysis: users click a news item to simulate a DeepSeek-style analysis that combines the news with the current market context.
 - Market validation: the analysis distinguishes between isolated news sentiment and whether the market has actually confirmed the message.
+- Source navigation and search: news cards link out to source/search pages, and the header search opens Bing results for related news.
 
 ## Local Development
 

@@ -28,6 +28,57 @@
   line-height: 1.16;
 }
 
+.topbar-actions {
+  display: grid;
+  min-width: min(520px, 46vw);
+  gap: 10px;
+  justify-items: end;
+}
+
+.search-form {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 42px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.search-form svg {
+  flex: 0 0 auto;
+  margin-left: 9px;
+  color: var(--muted);
+}
+
+.search-form input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-strong);
+  font-size: 14px;
+  padding: 8px 9px;
+}
+
+.search-form input::placeholder {
+  color: var(--muted);
+}
+
+.search-form button {
+  border: 0;
+  border-radius: 6px;
+  background: #eef5f3;
+  color: #245e4b;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 760;
+  padding: 8px 12px;
+}
+
 .market-switch {
   display: inline-flex;
   min-width: 180px;
@@ -238,6 +289,7 @@
   cursor: pointer;
   font: inherit;
   text-align: left;
+  text-decoration: none;
 }
 
 .sector-row {
@@ -368,6 +420,37 @@
   grid-column: 2 / 3;
   color: var(--muted);
   font-size: 12px;
+}
+
+.source-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.source-actions a,
+.source-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--text-strong);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 740;
+  padding: 7px 10px;
+  text-decoration: none;
+}
+
+.source-actions a:first-child {
+  border-color: #b9d8cf;
+  background: #f4fbf8;
+  color: #23634b;
 }
 
 .analysis-head {
@@ -518,7 +601,9 @@
   color: #97621f;
 }
 
-button:focus-visible {
+button:focus-visible,
+a:focus-visible,
+input:focus-visible {
   outline: 2px solid #236d84;
   outline-offset: 2px;
 }
@@ -545,7 +630,16 @@ button:focus-visible {
     flex-direction: column;
   }
 
+  .topbar-actions {
+    width: 100%;
+    min-width: 0;
+  }
+
   .market-switch {
+    width: 100%;
+  }
+
+  .search-form {
     width: 100%;
   }
 
@@ -580,5 +674,11 @@ button:focus-visible {
   .news-row .tag,
   .news-meta {
     grid-column: 1 / 3;
+  }
+
+  .source-actions a,
+  .source-actions button {
+    flex: 1 1 160px;
+    justify-content: center;
   }
 }
