@@ -12,6 +12,7 @@ The prototype focuses on:
 - News crawler: the local Vite server can crawl Google News RSS by sector query, cache results briefly, and render them as clickable news cards.
 - DeepSeek news bot: users can ask questions about the currently loaded sector news; the server only calls DeepSeek when the question form is submitted.
 - Custom sector tracking: users can add a sector name and then crawl news for that sector on demand.
+- Agentic news radar: crawler, dedup, heat, contrarian, briefing, and Q&A agents cooperate behind the scenes while keeping DeepSeek calls low-frequency.
 - Market validation: the analysis distinguishes between isolated news sentiment and whether the market has actually confirmed the message.
 - Source navigation and search: news cards link out to source/search pages, and the header search opens Bing results for related news.
 

@@ -4,6 +4,11 @@ import { execFile } from 'node:child_process'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { promisify } from 'node:util'
 import type { Plugin } from 'vite'
+import {
+  handleBriefingApi,
+  handleContrarianApi,
+  handleRadarApi,
+} from './api/_server'
 
 type StooqQuote = {
   symbol: string
@@ -127,6 +132,13 @@ function readRequestBody(request: IncomingMessage) {
     request.on('end', () => resolve(body))
     request.on('error', reject)
   })
+}
+
+function writeJson(response: ServerResponse, status: number, body: unknown, headers?: Record<string, string>) {
+  response.statusCode = status
+  response.setHeader('Content-Type', 'application/json; charset=utf-8')
+  Object.entries(headers ?? {}).forEach(([key, value]) => response.setHeader(key, value))
+  response.end(JSON.stringify(body))
 }
 
 function marketSourceProxy(): Plugin {
@@ -415,6 +427,43 @@ function marketSourceProxy(): Plugin {
       return
     }
 
+    if (requestUrl.pathname === '/api/radar') {
+      try {
+        const result = await handleRadarApi(requestUrl)
+        writeJson(response, result.status, result.body, result.headers)
+      } catch (error) {
+        writeJson(response, 502, {
+          error: error instanceof Error ? error.message : 'Unable to build radar',
+        })
+      }
+      return
+    }
+
+    if (
+      requestUrl.pathname === '/api/agent/contrarian' ||
+      requestUrl.pathname === '/api/agent/briefing'
+    ) {
+      if (request.method !== 'POST') {
+        writeJson(response, 405, { error: 'Method not allowed' })
+        return
+      }
+
+      try {
+        const payload = JSON.parse(await readRequestBody(request) || '{}') as never
+        const result =
+          requestUrl.pathname === '/api/agent/contrarian'
+            ? await handleContrarianApi(payload)
+            : await handleBriefingApi(payload)
+
+        writeJson(response, result.status, result.body, result.headers)
+      } catch (error) {
+        writeJson(response, 502, {
+          error: error instanceof Error ? error.message : 'Agent endpoint failed',
+        })
+      }
+      return
+    }
+
     if (requestUrl.pathname === '/api/deepseek-chat') {
       if (request.method !== 'POST') {
         response.statusCode = 405
@@ -479,6 +528,6 @@ function marketSourceProxy(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig({
-  base: '/FinUpdates/',
+  base: process.env.VERCEL ? '/' : '/FinUpdates/',
   plugins: [react(), marketSourceProxy()],
 })

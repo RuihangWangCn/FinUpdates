@@ -1,13 +1,17 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Activity,
+  AlertTriangle,
   ArrowDownRight,
   ArrowUpRight,
   BarChart3,
+  Bot,
   Brain,
   Clock3,
+  Copy,
   DatabaseZap,
   ExternalLink,
+  Flame,
   LineChart,
   MessageCircle,
   Newspaper,
@@ -19,6 +23,14 @@ import {
   ShieldAlert,
   Sparkles,
 } from 'lucide-react'
+import {
+  buildContrarianResult,
+  buildRadarItem,
+  buildRuleBriefing,
+  type BriefingResult,
+  type ContrarianResult,
+  type RadarItem,
+} from './agentRules'
 import './App.css'
 
 type Market = 'A股' | '美股'
@@ -99,6 +111,13 @@ type DeepSeekChatResponse = {
   answer?: string
   model?: string
   error?: string
+}
+
+type RadarResponse = {
+  source: string
+  market: Market
+  fetchedAt: string
+  items: RadarItem[]
 }
 
 type Analysis = {
@@ -296,6 +315,48 @@ const sectors: Sector[] = [
     laggards: ['烽火通信 -0.8%'],
     newsCount: 5,
     aiRead: '消息偏正面，但成交额没有进入市场主线。',
+  },
+  {
+    id: 'robotics',
+    market: 'A股',
+    name: '机器人',
+    change: 0.96,
+    turnoverRank: 5,
+    hotScore: 88,
+    advancers: 46,
+    totalStocks: 71,
+    leaders: ['埃斯顿 +4.2%', '绿的谐波 +3.8%'],
+    laggards: ['机器人 -0.6%'],
+    newsCount: 7,
+    aiRead: '人形机器人新闻密集，先看龙头和成交能否持续。',
+  },
+  {
+    id: 'ashare-semis',
+    market: 'A股',
+    name: '半导体',
+    change: 1.28,
+    turnoverRank: 4,
+    hotScore: 82,
+    advancers: 58,
+    totalStocks: 96,
+    leaders: ['北方华创 +3.6%', '中芯国际 +2.4%'],
+    laggards: ['韦尔股份 -1.2%'],
+    newsCount: 6,
+    aiRead: '设备与国产替代方向有新闻催化，但需要看资金扩散。',
+  },
+  {
+    id: 'compute',
+    market: 'A股',
+    name: 'AI 算力',
+    change: 2.08,
+    turnoverRank: 2,
+    hotScore: 90,
+    advancers: 41,
+    totalStocks: 63,
+    leaders: ['工业富联 +5.1%', '浪潮信息 +3.9%'],
+    laggards: ['中科曙光 -0.9%'],
+    newsCount: 8,
+    aiRead: '算力链条仍是资金主线之一，重点看订单和资本开支兑现。',
   },
   {
     id: 'ai',
@@ -578,6 +639,53 @@ async function fetchCrawledNews(market: Market, sector: Sector): Promise<Crawled
   )
 }
 
+async function fetchRadar(market: Market): Promise<RadarResponse> {
+  return fetchJson<RadarResponse>(`/api/radar?market=${encodeURIComponent(market)}`)
+}
+
+async function fetchContrarianAgent({
+  sector,
+  news,
+}: {
+  sector: Sector
+  news: NewsItem[]
+}): Promise<ContrarianResult & { mode?: string; aiNote?: string; error?: string }> {
+  const response = await fetch('/api/agent/contrarian', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sector: {
+        id: sector.id,
+        market: sector.market,
+        name: sector.name,
+        change: sector.change,
+        hotScore: sector.hotScore,
+        leaders: sector.leaders,
+      },
+      news,
+      mode: 'deepseek',
+    }),
+  })
+  const data = (await response.json()) as ContrarianResult & { mode?: string; aiNote?: string; error?: string }
+
+  if (!response.ok) throw new Error(data.error ?? '反证 agent 调用失败')
+
+  return data
+}
+
+async function fetchBriefingAgent(radarItems: RadarItem[]): Promise<BriefingResult & { mode?: string; error?: string }> {
+  const response = await fetch('/api/agent/briefing', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ radarItems, mode: 'deepseek' }),
+  })
+  const data = (await response.json()) as BriefingResult & { mode?: string; error?: string }
+
+  if (!response.ok) throw new Error(data.error ?? '简报 agent 调用失败')
+
+  return data
+}
+
 async function askDeepSeekBot({
   question,
   market,
@@ -713,6 +821,22 @@ async function loadMarketSourceSnapshot(): Promise<MarketSourceSnapshot> {
   return nextSnapshot
 }
 
+function readStoredCustomSectors() {
+  if (typeof window === 'undefined') return []
+
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem('finupdates.customSectors') ?? '[]')
+
+    return Array.isArray(parsed) ? (parsed as Sector[]) : []
+  } catch {
+    return []
+  }
+}
+
+function writeStoredCustomSectors(items: Sector[]) {
+  window.localStorage.setItem('finupdates.customSectors', JSON.stringify(items))
+}
+
 function buildAnalysis(news: NewsItem, sector: Sector, breadth: MarketBreadth): Analysis {
   const sectorIsUp = sector.change > 0
   const broadMarketTone = breadth.advancers > breadth.decliners ? '整体市场偏强' : '整体市场偏弱'
@@ -768,12 +892,19 @@ function App() {
   const [crawledNewsBySector, setCrawledNewsBySector] = useState<
     Record<string, CrawledNewsState>
   >({})
-  const [customSectors, setCustomSectors] = useState<Sector[]>([])
+  const [customSectors, setCustomSectors] = useState<Sector[]>(() => readStoredCustomSectors())
   const [customSectorName, setCustomSectorName] = useState('')
   const [botQuestion, setBotQuestion] = useState('')
   const [botMessages, setBotMessages] = useState<BotMessage[]>([])
   const [botStatus, setBotStatus] = useState<SourceStatus>('idle')
   const [botError, setBotError] = useState<string | undefined>()
+  const [radarSnapshot, setRadarSnapshot] = useState<RadarResponse | undefined>()
+  const [radarStatus, setRadarStatus] = useState<SourceStatus>('idle')
+  const [radarError, setRadarError] = useState<string | undefined>()
+  const [briefing, setBriefing] = useState<BriefingResult | undefined>()
+  const [briefingStatus, setBriefingStatus] = useState<SourceStatus>('idle')
+  const [briefingError, setBriefingError] = useState<string | undefined>()
+  const [contrarianBySector, setContrarianBySector] = useState<Record<string, ContrarianResult & { aiNote?: string; mode?: string }>>({})
 
   const breadth = marketBreadths.find((item) => item.market === activeMarket)!
   const displayBreadth = useMemo<MarketBreadth>(() => {
@@ -826,6 +957,53 @@ function App() {
   const selectedNews =
     visibleNews.find((news) => news.id === selectedNewsId) ?? visibleNews[0]
   const selectedAnalysis = selectedNews ? analysisCache[selectedNews.id] : undefined
+  const localRadarItems = useMemo(
+    () =>
+      visibleSectors
+        .map((sector) =>
+          buildRadarItem(
+            {
+              id: sector.id,
+              market: sector.market,
+              name: sector.name,
+              change: sector.change,
+              hotScore: sector.hotScore,
+              leaders: sector.leaders,
+            },
+            crawledNewsBySector[sector.id]?.items ?? newsItems.filter((news) => news.sectorId === sector.id),
+          ),
+        )
+        .sort((a, b) => b.heatScore - a.heatScore),
+    [crawledNewsBySector, visibleSectors],
+  )
+  const customRadarItems = localRadarItems.filter((item) => item.sectorId.startsWith('custom-'))
+  const radarItems = useMemo(() => {
+    const serverItems = radarSnapshot?.market === activeMarket ? radarSnapshot.items : []
+    const merged = [...customRadarItems, ...serverItems]
+    const bySector = new Map<string, RadarItem>()
+
+    ;(merged.length ? merged : localRadarItems).forEach((item) => {
+      bySector.set(item.sectorId, item)
+    })
+
+    return Array.from(bySector.values()).sort((a, b) => b.heatScore - a.heatScore)
+  }, [activeMarket, customRadarItems, localRadarItems, radarSnapshot])
+  const selectedRadarItem = radarItems.find((item) => item.sectorId === selectedSector.id)
+  const isCustomSelectedSector = selectedSector.id.startsWith('custom-')
+  const ruleBriefing = useMemo(() => buildRuleBriefing(radarItems), [radarItems])
+  const activeContrarian =
+    contrarianBySector[selectedSector.id] ??
+    buildContrarianResult(
+      {
+        id: selectedSector.id,
+        market: selectedSector.market,
+        name: selectedSector.name,
+        change: selectedSector.change,
+        hotScore: selectedSector.hotScore,
+        leaders: selectedSector.leaders,
+      },
+      visibleNews,
+    )
   const activeSource =
     activeMarket === 'A股' ? marketSource.aShare : marketSource.us
   const sourceItems =
@@ -843,11 +1021,38 @@ function App() {
     setMarketSource(await loadMarketSourceSnapshot())
   }, [])
 
+  const refreshRadar = useCallback(async () => {
+    if (isStaticDemoHost()) {
+      setRadarError(staticHostingMessage)
+      setRadarStatus('idle')
+      return
+    }
+
+    setRadarStatus('loading')
+    setRadarError(undefined)
+
+    try {
+      setRadarSnapshot(await fetchRadar(activeMarket))
+      setRadarStatus('ready')
+    } catch (error) {
+      setRadarError(error instanceof Error ? error.message : '雷达 agent 暂不可用')
+      setRadarStatus('error')
+    }
+  }, [activeMarket])
+
   useEffect(() => {
     const intervalId = window.setInterval(() => setCurrentTime(new Date()), 1000)
 
     return () => window.clearInterval(intervalId)
   }, [])
+
+  useEffect(() => {
+    writeStoredCustomSectors(customSectors)
+  }, [customSectors])
+
+  useEffect(() => {
+    refreshRadar()
+  }, [refreshRadar])
 
   useEffect(() => {
     let isMounted = true
@@ -918,6 +1123,17 @@ function App() {
         publishedAt: formatNewsTimestamp(item.publishedAt),
         relatedTickers: sector.leaders.slice(0, 2).map((leader) => leader.split(' ')[0]),
       }))
+      const crawledRadarItem = buildRadarItem(
+        {
+          id: sector.id,
+          market: sector.market,
+          name: sector.name,
+          change: sector.change,
+          hotScore: sector.hotScore,
+          leaders: sector.leaders,
+        },
+        crawledItems,
+      )
 
       setCrawledNewsBySector((state) => ({
         ...state,
@@ -930,9 +1146,39 @@ function App() {
         },
       }))
 
+      if (sector.id.startsWith('custom-')) {
+        setCustomSectors((items) =>
+          items.map((item) =>
+            item.id === sector.id
+              ? {
+                  ...item,
+                  hotScore: crawledRadarItem.heatScore,
+                  newsCount: crawledRadarItem.newsCount,
+                  aiRead: `已抓取 ${crawledRadarItem.newsCount} 条相关新闻，新闻热度 ${crawledRadarItem.heatScore}。`,
+                }
+              : item,
+          ),
+        )
+      }
+
       if (crawledItems[0]) {
         setSelectedNewsId(crawledItems[0].id)
       }
+
+      setContrarianBySector((state) => ({
+        ...state,
+        [sector.id]: buildContrarianResult(
+          {
+            id: sector.id,
+            market: sector.market,
+            name: sector.name,
+            change: sector.change,
+            hotScore: sector.hotScore,
+            leaders: sector.leaders,
+          },
+          crawledItems,
+        ),
+      }))
     } catch (error) {
       setCrawledNewsBySector((state) => ({
         ...state,
@@ -944,6 +1190,60 @@ function App() {
         },
       }))
     }
+  }
+
+  async function runContrarianAgent() {
+    if (!visibleNews.length || isStaticDemoHost()) return
+
+    setContrarianBySector((state) => ({
+      ...state,
+      [selectedSector.id]: buildContrarianResult(
+        {
+          id: selectedSector.id,
+          market: selectedSector.market,
+          name: selectedSector.name,
+          change: selectedSector.change,
+          hotScore: selectedSector.hotScore,
+          leaders: selectedSector.leaders,
+        },
+        visibleNews,
+      ),
+    }))
+
+    try {
+      const result = await fetchContrarianAgent({ sector: selectedSector, news: visibleNews })
+
+      setContrarianBySector((state) => ({
+        ...state,
+        [selectedSector.id]: result,
+      }))
+    } catch {
+      // Rule result above is the intended no-key/no-budget fallback.
+    }
+  }
+
+  async function runBriefingAgent() {
+    if (isStaticDemoHost()) {
+      setBriefing(ruleBriefing)
+      setBriefingError(staticHostingMessage)
+      return
+    }
+
+    setBriefingStatus('loading')
+    setBriefingError(undefined)
+
+    try {
+      setBriefing(await fetchBriefingAgent(radarItems))
+      setBriefingStatus('ready')
+    } catch (error) {
+      setBriefing(ruleBriefing)
+      setBriefingError(error instanceof Error ? error.message : '简报 agent 已降级为规则版')
+      setBriefingStatus('error')
+    }
+  }
+
+  async function copyBriefing() {
+    await window.navigator.clipboard.writeText((briefing ?? ruleBriefing).briefText)
   }
 
   function submitCustomSector(event: FormEvent<HTMLFormElement>) {
@@ -1081,6 +1381,100 @@ function App() {
           </div>
         </div>
       </header>
+
+      <section className="agent-dashboard" aria-label="Agent 新闻雷达">
+        <article className="radar-board">
+          <div className="panel-header">
+            <div className="section-title">
+              <Flame size={18} />
+              <span>Agent 新闻雷达榜</span>
+            </div>
+            <button
+              type="button"
+              className="crawler-action"
+              onClick={refreshRadar}
+              disabled={radarStatus === 'loading'}
+            >
+              <RefreshCw size={14} />
+              {radarStatus === 'loading' ? '刷新中' : '刷新雷达'}
+            </button>
+          </div>
+          <p className="agent-subtitle">
+            Crawler、Dedup、Heat Agent 先用规则跑；DeepSeek 只在反证、简报和提问时低频使用。
+            {radarError ? ` ${radarError}` : ''}
+          </p>
+          <div className="radar-list">
+            {radarItems.slice(0, 8).map((item) => {
+              const sector = visibleSectors.find((candidate) => candidate.id === item.sectorId)
+
+              return (
+                <button
+                  key={item.sectorId}
+                  type="button"
+                  className={`radar-row ${selectedSector.id === item.sectorId ? 'selected' : ''}`}
+                  onClick={() => {
+                    if (sector) selectSector(sector)
+                  }}
+                >
+                  <span className="radar-rank">{item.heatScore}</span>
+                  <span className="radar-main">
+                    <strong>{item.sectorName}</strong>
+                    <span>{item.latestNews?.title ?? '等待抓取新闻'}</span>
+                  </span>
+                  <span className="radar-side">
+                    <span>{item.newsCount} 条</span>
+                    <em>{item.riskLabel}</em>
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        </article>
+
+        <article className="briefing-card">
+          <div className="panel-header">
+            <div className="section-title">
+              <Bot size={18} />
+              <span>今日群聊简报</span>
+            </div>
+            <button
+              type="button"
+              className="crawler-action"
+              onClick={runBriefingAgent}
+              disabled={briefingStatus === 'loading'}
+            >
+              <Sparkles size={14} />
+              {briefingStatus === 'loading' ? '生成中' : '生成简报'}
+            </button>
+          </div>
+          <pre className="briefing-text">{(briefing ?? ruleBriefing).briefText}</pre>
+          {briefingError && <p className="agent-warning">{briefingError}</p>}
+          <button type="button" className="copy-action" onClick={copyBriefing}>
+            <Copy size={14} />
+            复制群聊摘要
+          </button>
+        </article>
+
+        <article className="contrarian-card">
+          <div className="panel-header">
+            <div className="section-title">
+              <AlertTriangle size={18} />
+              <span>反证提醒</span>
+            </div>
+            <button type="button" className="crawler-action" onClick={runContrarianAgent}>
+              <Brain size={14} />
+              检查当前板块
+            </button>
+          </div>
+          <strong className="risk-label">{activeContrarian.riskLabel}</strong>
+          <ul className="counterpoint-list">
+            {activeContrarian.counterpoints.map((point) => (
+              <li key={point}>{point}</li>
+            ))}
+          </ul>
+          {activeContrarian.aiNote && <p className="agent-note">{activeContrarian.aiNote}</p>}
+        </article>
+      </section>
 
       <section className="summary-grid" aria-label="市场概览">
         <article className="market-card breadth-card">
@@ -1222,14 +1616,16 @@ function App() {
                 <span className="sector-main">
                   <span className="sector-name">{sector.name}</span>
                   <span className="sector-context">
-                    {sector.advancers}/{sector.totalStocks} 上涨 · {sector.newsCount} 条消息
+                    {sector.id.startsWith('custom-')
+                      ? `新闻 ${sector.newsCount} 条 · 自选`
+                      : `${sector.advancers}/${sector.totalStocks} 上涨 · ${sector.newsCount} 条消息`}
                   </span>
                 </span>
                 <span className="sector-side">
-                  <strong className={toneFromChange(sector.change)}>
-                    {formatChange(sector.change)}
+                  <strong className={sector.id.startsWith('custom-') ? 'flat' : toneFromChange(sector.change)}>
+                    {sector.id.startsWith('custom-') ? `热度 ${sector.hotScore}` : formatChange(sector.change)}
                   </strong>
-                  <span>热度 {sector.hotScore}</span>
+                  <span>{sector.id.startsWith('custom-') ? '自选' : `热度 ${sector.hotScore}`}</span>
                 </span>
               </button>
             ))}
@@ -1256,45 +1652,84 @@ function App() {
               <h2>{selectedSector.name}</h2>
               <p>{selectedSector.aiRead}</p>
             </div>
-            <div className={`change-pill ${toneFromChange(selectedSector.change)}`}>
-              {selectedSector.change > 0 ? (
+            <div className={`change-pill ${isCustomSelectedSector ? 'flat' : toneFromChange(selectedSector.change)}`}>
+              {isCustomSelectedSector ? (
+                <Flame size={18} />
+              ) : selectedSector.change > 0 ? (
                 <ArrowUpRight size={18} />
               ) : (
                 <ArrowDownRight size={18} />
               )}
-              {formatChange(selectedSector.change)}
+              {isCustomSelectedSector
+                ? `热度 ${selectedRadarItem?.heatScore ?? selectedSector.hotScore}`
+                : formatChange(selectedSector.change)}
             </div>
           </div>
 
           <div className="sector-stats">
-            <Metric
-              label="成交额排名"
-              value={selectedSector.turnoverRank ? `#${selectedSector.turnoverRank}` : '待验证'}
-              tone="flat"
-              compact
-            />
-            <Metric
-              label="上涨比例"
-              value={
-                selectedSector.totalStocks
-                  ? `${selectedSector.advancers}/${selectedSector.totalStocks}`
-                  : '待验证'
-              }
-              tone="up"
-              compact
-            />
-            <Metric
-              label="领涨"
-              value={selectedSector.leaders.length ? selectedSector.leaders.join(' / ') : '待抓取'}
-              tone="up"
-              compact
-            />
-            <Metric
-              label="领跌"
-              value={selectedSector.laggards.length ? selectedSector.laggards.join(' / ') : '待抓取'}
-              tone="down"
-              compact
-            />
+            {isCustomSelectedSector ? (
+              <>
+                <Metric
+                  label="新闻热度"
+                  value={`${selectedRadarItem?.heatScore ?? selectedSector.hotScore}`}
+                  tone="flat"
+                  compact
+                />
+                <Metric
+                  label="新闻数量"
+                  value={`${selectedRadarItem?.newsCount ?? selectedSector.newsCount} 条`}
+                  tone="up"
+                  compact
+                />
+                <Metric
+                  label="主要来源"
+                  value={
+                    selectedRadarItem?.topSources.length
+                      ? selectedRadarItem.topSources.join(' / ')
+                      : '待抓取'
+                  }
+                  tone="flat"
+                  compact
+                />
+                <Metric
+                  label="最新新闻"
+                  value={selectedRadarItem?.latestNews?.source ?? '待抓取'}
+                  tone="flat"
+                  compact
+                />
+              </>
+            ) : (
+              <>
+                <Metric
+                  label="成交额排名"
+                  value={selectedSector.turnoverRank ? `#${selectedSector.turnoverRank}` : '待验证'}
+                  tone="flat"
+                  compact
+                />
+                <Metric
+                  label="上涨比例"
+                  value={
+                    selectedSector.totalStocks
+                      ? `${selectedSector.advancers}/${selectedSector.totalStocks}`
+                      : '待验证'
+                  }
+                  tone="up"
+                  compact
+                />
+                <Metric
+                  label="领涨"
+                  value={selectedSector.leaders.length ? selectedSector.leaders.join(' / ') : '待抓取'}
+                  tone="up"
+                  compact
+                />
+                <Metric
+                  label="领跌"
+                  value={selectedSector.laggards.length ? selectedSector.laggards.join(' / ') : '待抓取'}
+                  tone="down"
+                  compact
+                />
+              </>
+            )}
           </div>
 
           <div className="news-analysis-grid">
@@ -1379,10 +1814,10 @@ function App() {
                   {!selectedAnalysis && (
                     <div className="empty-analysis">
                       <Sparkles size={24} />
-                      <strong>这条消息还没有手动做 AI 分析</strong>
+                      <strong>这条消息还没有做市场验证</strong>
                       <p>
-                        为了控制 API 成本，系统不会自动调用 DeepSeek。只有点击后，
-                        才会把新闻、市场宽度、指数、板块涨跌和相关个股交给 AI 判断。
+                        为了控制 API 成本，这里先用本地规则判断市场验证。DeepSeek 只在下方提问、
+                        反证和简报 agent 明确触发时使用。
                       </p>
                       <button
                         type="button"
@@ -1390,7 +1825,7 @@ function App() {
                         onClick={analyzeNews}
                         disabled={loadingId === selectedNews.id}
                       >
-                        {loadingId === selectedNews.id ? '分析中...' : '手动调用 DeepSeek 分析'}
+                        {loadingId === selectedNews.id ? '分析中...' : '查看市场验证'}
                       </button>
                     </div>
                   )}
