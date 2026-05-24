@@ -9,7 +9,11 @@ import {
   type MarketName,
   type RadarItem,
   type RadarSectorInput,
-} from '../src/agentRules'
+} from '../src/agentRules.js'
+
+declare const process: {
+  env: Record<string, string | undefined>
+}
 
 type CacheEntry<T> = {
   expiresAt: number
@@ -102,7 +106,7 @@ function parseGoogleNewsRss(xml: string, query: string, market: MarketName): Age
       const item = match[1]
       const rawTitle = readXmlTag(item, 'title')
       const titleParts = rawTitle.split(' - ')
-      const source = titleParts.length > 1 ? titleParts.at(-1) ?? 'Google News' : 'Google News'
+      const source = titleParts.length > 1 ? titleParts[titleParts.length - 1] ?? 'Google News' : 'Google News'
       const title = titleParts.length > 1 ? titleParts.slice(0, -1).join(' - ') : rawTitle
 
       return {

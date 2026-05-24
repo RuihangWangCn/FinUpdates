@@ -1,7 +1,16 @@
-import type { IncomingMessage, ServerResponse } from 'node:http'
-import { handleNewsApi } from './_server'
+import { handleNewsApi } from './_server.js'
 
-export default async function handler(request: IncomingMessage, response: ServerResponse) {
+type VercelRequest = {
+  url?: string
+}
+
+type VercelResponse = {
+  statusCode: number
+  setHeader(name: string, value: string): void
+  end(body?: string): void
+}
+
+export default async function handler(request: VercelRequest, response: VercelResponse) {
   const url = new URL(request.url ?? '', 'https://finupdates.local')
   const result = await handleNewsApi(url)
 

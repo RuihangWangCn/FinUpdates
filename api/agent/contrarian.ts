@@ -1,8 +1,17 @@
-import type { IncomingMessage, ServerResponse } from 'node:http'
-import { readJsonBody } from '../_body'
-import { handleContrarianApi } from '../_server'
+import { readJsonBody } from '../_body.js'
+import { handleContrarianApi } from '../_server.js'
 
-export default async function handler(request: IncomingMessage, response: ServerResponse) {
+type VercelRequest = Parameters<typeof readJsonBody>[0] & {
+  method?: string
+}
+
+type VercelResponse = {
+  statusCode: number
+  setHeader(name: string, value: string): void
+  end(body?: string): void
+}
+
+export default async function handler(request: VercelRequest, response: VercelResponse) {
   if (request.method !== 'POST') {
     response.statusCode = 405
     response.end(JSON.stringify({ error: 'Method not allowed' }))
