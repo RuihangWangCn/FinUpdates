@@ -14,6 +14,7 @@ import {
   Flame,
   LineChart,
   MessageCircle,
+  Minus,
   Newspaper,
   Plus,
   Radio,
@@ -1088,6 +1089,34 @@ function App() {
     if (firstNews) setSelectedNewsId(firstNews.id)
   }
 
+  function removeCustomSector(sectorId: string) {
+    const nextCustomSectors = customSectors.filter((sector) => sector.id !== sectorId)
+
+    setCustomSectors(nextCustomSectors)
+    setCrawledNewsBySector((state) => {
+      const nextState = { ...state }
+      delete nextState[sectorId]
+      return nextState
+    })
+    setContrarianBySector((state) => {
+      const nextState = { ...state }
+      delete nextState[sectorId]
+      return nextState
+    })
+
+    if (selectedSectorId !== sectorId) return
+
+    const nextSector = [...sectors, ...nextCustomSectors]
+      .filter((sector) => sector.market === activeMarket)
+      .sort((a, b) => b.hotScore - a.hotScore)[0]
+    const nextNews =
+      (nextSector ? crawledNewsBySector[nextSector.id]?.items[0] : undefined) ??
+      newsItems.find((news) => news.sectorId === nextSector?.id)
+
+    if (nextSector) setSelectedSectorId(nextSector.id)
+    setSelectedNewsId(nextNews?.id ?? '')
+  }
+
   async function crawlSectorNews() {
     const sector = selectedSector
 
@@ -1606,29 +1635,48 @@ function App() {
             <span className="muted">按热度分排序</span>
           </div>
           <div className="sector-list">
-            {visibleSectors.map((sector) => (
-              <button
-                type="button"
-                key={sector.id}
-                className={`sector-row ${selectedSector.id === sector.id ? 'selected' : ''}`}
-                onClick={() => selectSector(sector)}
-              >
-                <span className="sector-main">
-                  <span className="sector-name">{sector.name}</span>
-                  <span className="sector-context">
-                    {sector.id.startsWith('custom-')
-                      ? `新闻 ${sector.newsCount} 条 · 自选`
-                      : `${sector.advancers}/${sector.totalStocks} 上涨 · ${sector.newsCount} 条消息`}
-                  </span>
-                </span>
-                <span className="sector-side">
-                  <strong className={sector.id.startsWith('custom-') ? 'flat' : toneFromChange(sector.change)}>
-                    {sector.id.startsWith('custom-') ? `热度 ${sector.hotScore}` : formatChange(sector.change)}
-                  </strong>
-                  <span>{sector.id.startsWith('custom-') ? '自选' : `热度 ${sector.hotScore}`}</span>
-                </span>
-              </button>
-            ))}
+            {visibleSectors.map((sector) => {
+              const isCustomSector = sector.id.startsWith('custom-')
+
+              return (
+                <div
+                  key={sector.id}
+                  className={`sector-row ${selectedSector.id === sector.id ? 'selected' : ''}`}
+                >
+                  <button
+                    type="button"
+                    className="sector-select"
+                    onClick={() => selectSector(sector)}
+                  >
+                    <span className="sector-main">
+                      <span className="sector-name">{sector.name}</span>
+                      <span className="sector-context">
+                        {isCustomSector
+                          ? `新闻 ${sector.newsCount} 条 · 自选`
+                          : `${sector.advancers}/${sector.totalStocks} 上涨 · ${sector.newsCount} 条消息`}
+                      </span>
+                    </span>
+                    <span className="sector-side">
+                      <strong className={isCustomSector ? 'flat' : toneFromChange(sector.change)}>
+                        {isCustomSector ? `热度 ${sector.hotScore}` : formatChange(sector.change)}
+                      </strong>
+                      <span>{isCustomSector ? '自选' : `热度 ${sector.hotScore}`}</span>
+                    </span>
+                  </button>
+                  {isCustomSector && (
+                    <button
+                      type="button"
+                      className="sector-remove"
+                      onClick={() => removeCustomSector(sector.id)}
+                      aria-label={`移除 ${sector.name}`}
+                      title={`移除 ${sector.name}`}
+                    >
+                      <Minus size={15} />
+                    </button>
+                  )}
+                </div>
+              )
+            })}
           </div>
           <form className="custom-sector-form" onSubmit={submitCustomSector}>
             <label htmlFor="custom-sector">添加自选板块</label>

@@ -623,10 +623,44 @@
 }
 
 .sector-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  overflow: hidden;
+}
+
+.sector-select {
   display: flex;
   justify-content: space-between;
   gap: 12px;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
   padding: 12px;
+  text-align: left;
+}
+
+.sector-remove {
+  display: inline-grid;
+  place-items: center;
+  align-self: stretch;
+  width: 34px;
+  margin: 7px 7px 7px 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.sector-remove:hover {
+  border-color: #d9a3a3;
+  color: var(--down);
+  background: #fff7f7;
 }
 
 .sector-row:hover,
