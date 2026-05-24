@@ -1,3 +1,71 @@
+.login-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+}
+
+.login-card {
+  display: grid;
+  width: min(420px, 100%);
+  gap: 12px;
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.login-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 8px;
+  background: #eef5f3;
+  color: #245e4b;
+}
+
+.login-card h1 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 28px;
+  line-height: 1.18;
+}
+
+.login-card p {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.login-card label {
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.login-card input {
+  min-height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--text-strong);
+  font: inherit;
+  padding: 8px 10px;
+}
+
+.login-card button {
+  min-height: 42px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--text-strong);
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 760;
+}
+
 .app-shell {
   width: min(1440px, 100%);
   margin: 0 auto;
@@ -114,6 +182,36 @@
 .market-switch button.active {
   background: var(--text-strong);
   color: #fff;
+}
+
+.user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 5px 6px 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.user-chip button {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--surface-subtle);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.user-chip button:hover {
+  color: var(--text-strong);
 }
 
 .summary-grid {

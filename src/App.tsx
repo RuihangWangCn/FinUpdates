@@ -13,6 +13,7 @@ import {
   ExternalLink,
   Flame,
   LineChart,
+  LogOut,
   MessageCircle,
   Minus,
   Newspaper,
@@ -23,6 +24,7 @@ import {
   Send,
   ShieldAlert,
   Sparkles,
+  User,
 } from 'lucide-react'
 import {
   buildContrarianResult,
@@ -60,6 +62,7 @@ type Sector = {
   turnoverRank: number
   hotScore: number
   advancers: number
+  decliners?: number
   totalStocks: number
   leaders: string[]
   laggards: string[]
@@ -119,6 +122,15 @@ type RadarResponse = {
   market: Market
   fetchedAt: string
   items: RadarItem[]
+}
+
+type NewsDirectionStats = {
+  up: number
+  down: number
+  neutral: number
+  total: number
+  upRatio: number
+  downRatio: number
 }
 
 type Analysis = {
@@ -822,11 +834,37 @@ async function loadMarketSourceSnapshot(): Promise<MarketSourceSnapshot> {
   return nextSnapshot
 }
 
-function readStoredCustomSectors() {
+const legacyCustomSectorsKey = 'finupdates.customSectors'
+const userNameKey = 'finupdates.userName'
+
+function normalizeUserName(value: string) {
+  return value.trim().replace(/\s+/g, ' ').slice(0, 18)
+}
+
+function customSectorsKey(userName: string) {
+  return `finupdates.customSectors.${encodeURIComponent(userName.toLowerCase())}`
+}
+
+function readStoredUserName() {
+  if (typeof window === 'undefined') return ''
+
+  return normalizeUserName(window.localStorage.getItem(userNameKey) ?? '')
+}
+
+function writeStoredUserName(userName: string) {
+  window.localStorage.setItem(userNameKey, userName)
+}
+
+function clearStoredUserName() {
+  window.localStorage.removeItem(userNameKey)
+}
+
+function readStoredCustomSectors(userName: string) {
   if (typeof window === 'undefined') return []
 
   try {
-    const parsed = JSON.parse(window.localStorage.getItem('finupdates.customSectors') ?? '[]')
+    const userValue = window.localStorage.getItem(customSectorsKey(userName))
+    const parsed = JSON.parse(userValue ?? window.localStorage.getItem(legacyCustomSectorsKey) ?? '[]')
 
     return Array.isArray(parsed) ? (parsed as Sector[]) : []
   } catch {
@@ -834,8 +872,86 @@ function readStoredCustomSectors() {
   }
 }
 
-function writeStoredCustomSectors(items: Sector[]) {
-  window.localStorage.setItem('finupdates.customSectors', JSON.stringify(items))
+function writeStoredCustomSectors(userName: string, items: Sector[]) {
+  window.localStorage.setItem(customSectorsKey(userName), JSON.stringify(items))
+}
+
+const upSignalKeywords = [
+  '上涨',
+  '大涨',
+  '涨停',
+  '领涨',
+  '走强',
+  '突破',
+  '新高',
+  '增长',
+  '扩产',
+  '订单',
+  '火爆',
+  '提速',
+  '飘红',
+  '反弹',
+]
+
+const downSignalKeywords = [
+  '下跌',
+  '普跌',
+  '跌停',
+  '退市',
+  '终止上市',
+  '下挫',
+  '调整',
+  '亏损',
+  '减持',
+  '承压',
+  '走弱',
+  '回调',
+  '风险',
+]
+
+function countKeywordHits(text: string, keywords: string[]) {
+  return keywords.filter((keyword) => text.includes(keyword)).length
+}
+
+function buildNewsDirectionStats(news: NewsItem[]): NewsDirectionStats {
+  const stats = news.reduce(
+    (result, item) => {
+      const text = `${item.title} ${item.rawSummary}`
+      const upHits = countKeywordHits(text, upSignalKeywords)
+      const downHits = countKeywordHits(text, downSignalKeywords)
+
+      if (upHits > downHits) result.up += 1
+      else if (downHits > upHits) result.down += 1
+      else result.neutral += 1
+
+      return result
+    },
+    { up: 0, down: 0, neutral: 0 },
+  )
+  const total = news.length
+
+  return {
+    ...stats,
+    total,
+    upRatio: total ? Math.round((stats.up / total) * 100) : 0,
+    downRatio: total ? Math.round((stats.down / total) * 100) : 0,
+  }
+}
+
+function buildStoredDirectionStats(sector: Sector): NewsDirectionStats {
+  const up = sector.advancers
+  const down = sector.decliners ?? 0
+  const total = sector.totalStocks || sector.newsCount
+  const neutral = Math.max(0, total - up - down)
+
+  return {
+    up,
+    down,
+    neutral,
+    total,
+    upRatio: total ? Math.round((up / total) * 100) : 0,
+    downRatio: total ? Math.round((down / total) * 100) : 0,
+  }
 }
 
 function buildAnalysis(news: NewsItem, sector: Sector, breadth: MarketBreadth): Analysis {
@@ -880,6 +996,8 @@ function buildAnalysis(news: NewsItem, sector: Sector, breadth: MarketBreadth): 
 }
 
 function App() {
+  const [userName, setUserName] = useState(() => readStoredUserName())
+  const [loginName, setLoginName] = useState(() => readStoredUserName())
   const [activeMarket, setActiveMarket] = useState<Market>('A股')
   const [selectedSectorId, setSelectedSectorId] = useState('cpo')
   const [selectedNewsId, setSelectedNewsId] = useState('n1')
@@ -893,7 +1011,11 @@ function App() {
   const [crawledNewsBySector, setCrawledNewsBySector] = useState<
     Record<string, CrawledNewsState>
   >({})
-  const [customSectors, setCustomSectors] = useState<Sector[]>(() => readStoredCustomSectors())
+  const [customSectors, setCustomSectors] = useState<Sector[]>(() => {
+    const storedUserName = readStoredUserName()
+
+    return storedUserName ? readStoredCustomSectors(storedUserName) : []
+  })
   const [customSectorName, setCustomSectorName] = useState('')
   const [botQuestion, setBotQuestion] = useState('')
   const [botMessages, setBotMessages] = useState<BotMessage[]>([])
@@ -991,6 +1113,19 @@ function App() {
   }, [activeMarket, customRadarItems, localRadarItems, radarSnapshot])
   const selectedRadarItem = radarItems.find((item) => item.sectorId === selectedSector.id)
   const isCustomSelectedSector = selectedSector.id.startsWith('custom-')
+  const customDirectionBySector = useMemo(() => {
+    const entries = customSectors.map((sector) => [
+      sector.id,
+      crawledNewsBySector[sector.id]?.items.length
+        ? buildNewsDirectionStats(crawledNewsBySector[sector.id].items)
+        : buildStoredDirectionStats(sector),
+    ])
+
+    return Object.fromEntries(entries) as Record<string, NewsDirectionStats>
+  }, [crawledNewsBySector, customSectors])
+  const selectedDirectionStats = isCustomSelectedSector
+    ? customDirectionBySector[selectedSector.id] ?? buildNewsDirectionStats(visibleNews)
+    : undefined
   const ruleBriefing = useMemo(() => buildRuleBriefing(radarItems), [radarItems])
   const activeContrarian =
     contrarianBySector[selectedSector.id] ??
@@ -1048,8 +1183,8 @@ function App() {
   }, [])
 
   useEffect(() => {
-    writeStoredCustomSectors(customSectors)
-  }, [customSectors])
+    if (userName) writeStoredCustomSectors(userName, customSectors)
+  }, [customSectors, userName])
 
   useEffect(() => {
     refreshRadar()
@@ -1087,6 +1222,29 @@ function App() {
       crawledNewsBySector[sector.id]?.items[0] ?? newsItems.find((news) => news.sectorId === sector.id)
     setSelectedSectorId(sector.id)
     if (firstNews) setSelectedNewsId(firstNews.id)
+  }
+
+  function submitLogin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const nextUserName = normalizeUserName(loginName)
+
+    if (!nextUserName) return
+
+    setUserName(nextUserName)
+    setLoginName(nextUserName)
+    writeStoredUserName(nextUserName)
+    setCustomSectors(readStoredCustomSectors(nextUserName))
+    setSelectedSectorId('cpo')
+    setSelectedNewsId('n1')
+  }
+
+  function logoutUser() {
+    clearStoredUserName()
+    setUserName('')
+    setLoginName('')
+    setCustomSectors([])
+    setSelectedSectorId('cpo')
+    setSelectedNewsId('n1')
   }
 
   function removeCustomSector(sectorId: string) {
@@ -1163,6 +1321,7 @@ function App() {
         },
         crawledItems,
       )
+      const crawledDirectionStats = buildNewsDirectionStats(crawledItems)
 
       setCrawledNewsBySector((state) => ({
         ...state,
@@ -1183,6 +1342,9 @@ function App() {
                   ...item,
                   hotScore: crawledRadarItem.heatScore,
                   newsCount: crawledRadarItem.newsCount,
+                  advancers: crawledDirectionStats.up,
+                  decliners: crawledDirectionStats.down,
+                  totalStocks: crawledDirectionStats.total,
                   aiRead: `已抓取 ${crawledRadarItem.newsCount} 条相关新闻，新闻热度 ${crawledRadarItem.heatScore}。`,
                 }
               : item,
@@ -1289,6 +1451,7 @@ function App() {
       turnoverRank: 0,
       hotScore: 50,
       advancers: 0,
+      decliners: 0,
       totalStocks: 0,
       leaders: [],
       laggards: [],
@@ -1373,6 +1536,31 @@ function App() {
     searchBing(searchQuery)
   }
 
+  if (!userName) {
+    return (
+      <main className="login-shell">
+        <form className="login-card" onSubmit={submitLogin}>
+          <div className="login-icon">
+            <User size={22} />
+          </div>
+          <p className="eyebrow">FinUpdates</p>
+          <h1>输入名字进入</h1>
+          <p>不用密码，只用来保存你的自选板块和页面偏好。</p>
+          <label htmlFor="login-name">名字</label>
+          <input
+            id="login-name"
+            value={loginName}
+            onChange={(event) => setLoginName(event.target.value)}
+            placeholder="例如：Chris"
+            autoComplete="name"
+            autoFocus
+          />
+          <button type="submit">进入</button>
+        </form>
+      </main>
+    )
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -1407,6 +1595,13 @@ function App() {
                 {market}
               </button>
             ))}
+          </div>
+          <div className="user-chip">
+            <User size={15} />
+            <span>{userName}</span>
+            <button type="button" onClick={logoutUser} aria-label="切换用户" title="切换用户">
+              <LogOut size={14} />
+            </button>
           </div>
         </div>
       </header>
@@ -1652,7 +1847,9 @@ function App() {
                       <span className="sector-name">{sector.name}</span>
                       <span className="sector-context">
                         {isCustomSector
-                          ? `新闻 ${sector.newsCount} 条 · 自选`
+                          ? `涨 ${customDirectionBySector[sector.id]?.up ?? sector.advancers} / 跌 ${
+                              customDirectionBySector[sector.id]?.down ?? 0
+                            } · ${sector.newsCount} 条`
                           : `${sector.advancers}/${sector.totalStocks} 上涨 · ${sector.newsCount} 条消息`}
                       </span>
                     </span>
@@ -1730,18 +1927,14 @@ function App() {
                   compact
                 />
                 <Metric
-                  label="主要来源"
-                  value={
-                    selectedRadarItem?.topSources.length
-                      ? selectedRadarItem.topSources.join(' / ')
-                      : '待抓取'
-                  }
-                  tone="flat"
+                  label="上涨/下跌"
+                  value={`涨 ${selectedDirectionStats?.up ?? 0} / 跌 ${selectedDirectionStats?.down ?? 0}`}
+                  tone={(selectedDirectionStats?.up ?? 0) >= (selectedDirectionStats?.down ?? 0) ? 'up' : 'down'}
                   compact
                 />
                 <Metric
-                  label="最新新闻"
-                  value={selectedRadarItem?.latestNews?.source ?? '待抓取'}
+                  label="多空比例"
+                  value={`${selectedDirectionStats?.upRatio ?? 0}% / ${selectedDirectionStats?.downRatio ?? 0}%`}
                   tone="flat"
                   compact
                 />
