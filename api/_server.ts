@@ -33,10 +33,33 @@ type DeepSeekApiResponse = {
   usage?: unknown
 }
 
+type StooqQuote = {
+  symbol: string
+  date: string
+  time: string
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number
+}
+
 export type JsonResponse = {
   status: number
   body: unknown
   headers?: Record<string, string>
+}
+
+const eastmoneyTargets = {
+  indices:
+    'https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&fields=f12,f14,f2,f3,f4,f6,f104,f105,f106&secids=1.000001,0.399001,0.399006,1.000688',
+  sectors:
+    'https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=8&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:90+t:2&fields=f12,f14,f2,f3,f20,f104,f105',
+}
+const tencentIndexNames: Record<string, string> = {
+  sh000001: '上证指数',
+  sz399001: '深证成指',
+  sz399006: '创业板指',
 }
 
 const cache = new Map<string, CacheEntry<unknown>>()
@@ -97,6 +120,68 @@ function readXmlTag(item: string, tagName: string) {
 
 function normalizeQuery(value: string) {
   return value.trim().replace(/\s+/g, ' ').slice(0, 80)
+}
+
+async function fetchText(url: string, sourceName: string) {
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 FinUpdates/1.0',
+    },
+  })
+
+  if (!response.ok) {
+    throw new Error(`${sourceName} returned ${response.status}`)
+  }
+
+  return response.text()
+}
+
+function parseTencentIndexQuotes(rawText: string) {
+  const indices = rawText
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => {
+      const symbol = line.match(/^v_(\w+)=/)?.[1] ?? ''
+      const fields = line.match(/="([^"]*)"/)?.[1].split('~') ?? []
+      const trade = fields[35]?.split('/') ?? []
+
+      return {
+        symbol,
+        name: tencentIndexNames[symbol] ?? symbol,
+        price: Number(fields[3]) || 0,
+        change: Number(fields[32]) || 0,
+        changeAmount: Number(fields[31]) || 0,
+        turnover: Number(trade[2]) || 0,
+        sourceTime: fields[30] ?? '',
+      }
+    })
+    .filter((index) => index.symbol && index.price)
+
+  if (!indices.length) {
+    throw new Error('Tencent returned no index quotes')
+  }
+
+  return indices
+}
+
+function parseStooqCsv(csv: string, cleanSymbol: string): StooqQuote {
+  const [, dataLine] = csv.trim().split(/\r?\n/)
+  const [rawSymbol, date, time, open, high, low, close, volume] = dataLine?.split(',') ?? []
+
+  if (!rawSymbol || rawSymbol === 'N/D' || !date) {
+    throw new Error(`No Stooq quote for ${cleanSymbol}`)
+  }
+
+  return {
+    symbol: rawSymbol,
+    date,
+    time,
+    open: Number(open),
+    high: Number(high),
+    low: Number(low),
+    close: Number(close),
+    volume: Number(volume),
+  }
 }
 
 function parseGoogleNewsRss(xml: string, query: string, market: MarketName): AgentNewsItem[] {
@@ -248,6 +333,78 @@ export async function handleRadarApi(url: URL): Promise<JsonResponse> {
     status: 200,
     body: await memoize(`radar:${market}`, 90 * 1000, () => buildRadar(market)),
     headers: { 'Cache-Control': 'public, max-age=60, stale-while-revalidate=300' },
+  }
+}
+
+export async function handleAShareIndicesApi(): Promise<JsonResponse> {
+  const symbols = Object.keys(tencentIndexNames)
+  const rawText = await memoize(
+    `a-share-indices:${symbols.join(',')}`,
+    30 * 1000,
+    () => fetchText(`https://qt.gtimg.cn/q=${symbols.join(',')}`, 'Tencent quotes'),
+  )
+
+  return {
+    status: 200,
+    body: {
+      source: '腾讯证券',
+      indices: parseTencentIndexQuotes(rawText),
+    },
+    headers: { 'Cache-Control': 'public, max-age=20, stale-while-revalidate=60' },
+  }
+}
+
+export async function handleEastmoneyApi(url: URL): Promise<JsonResponse> {
+  const target = url.searchParams.get('target')
+
+  if (target !== 'indices' && target !== 'sectors') {
+    return { status: 400, body: { error: 'Unknown Eastmoney target' } }
+  }
+
+  const body = await memoize(
+    `eastmoney:${target}`,
+    30 * 1000,
+    () => fetchText(eastmoneyTargets[target], 'Eastmoney quotes'),
+  )
+
+  return {
+    status: 200,
+    body: JSON.parse(body),
+    headers: { 'Cache-Control': 'public, max-age=20, stale-while-revalidate=60' },
+  }
+}
+
+export async function handleStooqQuotesApi(url: URL): Promise<JsonResponse> {
+  const symbols = (url.searchParams.get('symbols') ?? 'spy.us,qqq.us,dia.us,iwm.us')
+    .split(',')
+    .map((symbol) => symbol.trim().toLowerCase())
+    .filter(Boolean)
+    .slice(0, 8)
+
+  if (!symbols.length) {
+    return { status: 400, body: { error: 'Missing Stooq symbols' } }
+  }
+
+  const quotes = await Promise.all(
+    symbols.map((symbol) =>
+      memoize(`stooq:${symbol}`, 30 * 1000, async () => {
+        const csv = await fetchText(
+          `https://stooq.com/q/l/?s=${encodeURIComponent(symbol)}&f=sd2t2ohlcv&h&e=csv`,
+          'Stooq',
+        )
+
+        return parseStooqCsv(csv, symbol)
+      }),
+    ),
+  )
+
+  return {
+    status: 200,
+    body: {
+      source: 'Stooq',
+      quotes,
+    },
+    headers: { 'Cache-Control': 'public, max-age=20, stale-while-revalidate=60' },
   }
 }
 
